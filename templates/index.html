@@ -208,7 +208,7 @@
         <div class="card">
             <div class="form-grid">
                 <div class="form-group">
-                    <label for="panel_cost">Solar Panel Cost ($)</label>
+                    <label for="panel_cost">Solar Panel Cost (R)</label>
                     <input type="number" id="panel_cost" step="0.01" min="0" placeholder="e.g., 1200" required>
                 </div>
                 <div class="form-group">
@@ -216,12 +216,12 @@
                     <input type="number" id="panel_wattage" step="1" min="1" placeholder="e.g., 400" required>
                 </div>
                 <div class="form-group">
-                    <label for="current_cost">Electricity Cost ($/kWh)</label>
+                    <label for="current_cost">Electricity Cost (R/kWh)</label>
                     <input type="number" id="current_cost" step="0.001" min="0" placeholder="e.g., 0.15" required>
                 </div>
                 <div class="form-group">
-                    <label for="daily_energy">Daily Energy Usage (Wh)</label>
-                    <input type="number" id="daily_energy" step="1" min="0" placeholder="e.g., 30000" required>
+                    <label for="daily_energy">Daily Energy Usage (kWh)</label>
+                    <input type="number" id="daily_energy" step="0.01" min="0" placeholder="e.g., 30" required>
                 </div>
                 <div class="form-group">
                     <label for="peak_power">Peak Power Demand (W)</label>
@@ -241,19 +241,56 @@
                     </div>
                     <div class="result-card">
                         <div class="result-label">Total Solar Cost</div>
-                        <div id="investment-result" class="result-value">$0</div>
+                        <div id="investment-result" class="result-value">R0</div>
                     </div>
                     <div class="result-card">
                         <div class="result-label">Annual Grid Cost</div>
-                        <div id="savings-result" class="result-value">$0</div>
+                        <div id="savings-result" class="result-value">R0</div>
                     </div>
                     <div class="result-card">
                         <div class="result-label">Payback Period</div>
                         <div id="payback-result" class="result-value">0 years</div>
                     </div>
                 </div>
-                
-                <div id="graph-container"></div>
+                <div class="graph-row">
+                    <div class="graph-card">
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
+                            <select id="mode-toggle-cumulative" style="padding:6px 12px; border-radius:6px; font-size:1rem;">
+                                <option value="annual">Annual</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                        </div>
+                        <div id="graph-cumulative-container"></div>
+                    </div>
+                    <div class="graph-card">
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
+                            <select id="mode-toggle-cost" style="padding:6px 12px; border-radius:6px; font-size:1rem;">
+                                <option value="annual">Annual</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                        </div>
+                        <div id="graph-cost-container"></div>
+                    </div>
+                </div>
+        <style>
+        .graph-row {
+            display: flex;
+            gap: 32px;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            margin-top: 18px;
+        }
+        .graph-card {
+            flex: 1;
+            min-width: 350px;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.05);
+            padding: 15px;
+            margin-bottom: 18px;
+        }
+        </style>
+                <!-- toggles now inside graph cards -->
             </div>
             
             <div class="assumptions">
@@ -270,63 +307,120 @@
     </div>
 
     <script>
-        document.getElementById('calculate-btn').addEventListener('click', function() {
+        let cachedData = null;
+        let cachedGraphs = { cumulative: {}, cost: {} };
+        function fetchAndRender(modeCumulative, modeCost, force=false) {
             // Get all inputs
             const panelCost = document.getElementById('panel_cost').value;
             const panelWattage = document.getElementById('panel_wattage').value;
             const currentCost = document.getElementById('current_cost').value;
             const dailyEnergy = document.getElementById('daily_energy').value;
             const peakPower = document.getElementById('peak_power').value;
-            
             // Validate
             if (!panelCost || !panelWattage || !currentCost || !dailyEnergy || !peakPower) {
                 showError('Please fill in all fields.');
                 return;
             }
-            
             // Reset UI
             document.getElementById('results').style.display = 'none';
             document.getElementById('error-message').style.display = 'none';
-            
-            // Send to Flask backend
-            fetch('/calculate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    panel_cost: panelCost,
-                    panel_wattage: panelWattage,
-                    current_cost: currentCost,
-                    daily_energy: dailyEnergy,
-                    peak_power: peakPower
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    // Update results
-                    document.getElementById('capacity-result').textContent = 
-                        data.required_capacity_w.toLocaleString(undefined, {maximumFractionDigits: 0}) + ' W';
-                    document.getElementById('investment-result').textContent = '$' + 
-                        data.total_solar_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-                    document.getElementById('savings-result').textContent = '$' + 
-                        data.annual_savings.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-                    document.getElementById('payback-result').textContent = 
-                        data.payback_period === 'Never' ? 'Never' : data.payback_period + ' years';
-                    
-                    // Render graph
-                    const graphData = JSON.parse(data.graph);
-                    Plotly.newPlot('graph-container', graphData.data, graphData.layout, {responsive: true});
-                    
-                    // Show results
-                    document.getElementById('results').style.display = 'block';
+            // If cached and not force, just switch graphs
+            if (cachedData && cachedGraphs.cumulative[modeCumulative] && cachedGraphs.cost[modeCost]) {
+                renderGraphs(cachedData, modeCumulative, modeCost);
+                return;
+            }
+            // Send to Flask backend for both modes
+            Promise.all([
+                fetch('/calculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        panel_cost: panelCost,
+                        panel_wattage: panelWattage,
+                        current_cost: currentCost,
+                        daily_energy: dailyEnergy,
+                        peak_power: peakPower,
+                        mode: modeCumulative
+                    })
+                }).then(res => res.json()),
+                fetch('/calculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        panel_cost: panelCost,
+                        panel_wattage: panelWattage,
+                        current_cost: currentCost,
+                        daily_energy: dailyEnergy,
+                        peak_power: peakPower,
+                        mode: modeCost
+                    })
+                }).then(res => res.json())
+            ]).then(([dataCumulative, dataCost]) => {
+                if (dataCumulative.success && dataCost.success) {
+                    cachedData = dataCumulative; // Use cumulative for summary
+                    cachedGraphs.cumulative[modeCumulative] = {
+                        graph_cumulative: dataCumulative.graph_cumulative
+                    };
+                    cachedGraphs.cost[modeCost] = {
+                        graph_cost: dataCost.graph_cost
+                    };
+                    renderGraphs(dataCumulative, modeCumulative, modeCost);
                 } else {
-                    showError(data.error);
+                    showError(dataCumulative.error || dataCost.error);
                 }
-            })
-            .catch(err => {
+            }).catch(err => {
                 console.error('Error:', err);
                 showError('An unexpected error occurred. Please check your inputs.');
             });
+        }
+
+        function renderGraphs(data, modeCumulative, modeCost) {
+            document.getElementById('capacity-result').textContent = 
+                data.required_capacity_w.toLocaleString(undefined, {maximumFractionDigits: 0}) + ' W';
+            document.getElementById('investment-result').textContent = 'R' + 
+                data.total_solar_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('savings-result').textContent = 'R' + 
+                data.annual_savings.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('payback-result').textContent = 
+                data.payback_period === 'Never' ? 'Never' : data.payback_period + ' years';
+            // Render both graphs
+            const graphCumulative = JSON.parse(cachedGraphs.cumulative[modeCumulative].graph_cumulative);
+            const graphCost = JSON.parse(cachedGraphs.cost[modeCost].graph_cost);
+            Plotly.purge('graph-cumulative-container');
+            Plotly.purge('graph-cost-container');
+            Plotly.newPlot('graph-cumulative-container', graphCumulative.data, graphCumulative.layout, {responsive: true});
+            Plotly.Plots.resize(document.getElementById('graph-cumulative-container'));
+            Plotly.newPlot('graph-cost-container', graphCost.data, graphCost.layout, {responsive: true});
+            Plotly.Plots.resize(document.getElementById('graph-cost-container'));
+            document.getElementById('results').style.display = 'block';
+            // Scroll to top of graphs
+            document.getElementById('graph-cumulative-container').scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+
+        document.getElementById('calculate-btn').addEventListener('click', function() {
+            const modeCumulative = document.getElementById('mode-toggle-cumulative').value;
+            const modeCost = document.getElementById('mode-toggle-cost').value;
+            cachedData = null; cachedGraphs = { cumulative: {}, cost: {} };
+            fetchAndRender(modeCumulative, modeCost, true);
+        });
+
+        document.getElementById('mode-toggle-cumulative').addEventListener('change', function() {
+            const modeCumulative = this.value;
+            const modeCost = document.getElementById('mode-toggle-cost').value;
+            if (cachedData && cachedGraphs.cumulative[modeCumulative] && cachedGraphs.cost[modeCost]) {
+                renderGraphs(cachedData, modeCumulative, modeCost);
+            } else {
+                fetchAndRender(modeCumulative, modeCost);
+            }
+        });
+        document.getElementById('mode-toggle-cost').addEventListener('change', function() {
+            const modeCost = this.value;
+            const modeCumulative = document.getElementById('mode-toggle-cumulative').value;
+            if (cachedData && cachedGraphs.cumulative[modeCumulative] && cachedGraphs.cost[modeCost]) {
+                renderGraphs(cachedData, modeCumulative, modeCost);
+            } else {
+                fetchAndRender(modeCumulative, modeCost);
+            }
         });
         
         function showError(msg) {
